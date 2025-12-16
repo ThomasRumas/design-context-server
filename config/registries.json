@@ -1,0 +1,34 @@
+{
+  "registries": [
+    {
+      "name": "Mozaic Design System",
+      "installCommand": "npm install @mozaic-ds/styles",
+      "description": "SCSS implementation of the Mozaic Design System.",
+      "useCases": ["HTML", "SCSS"],
+      "components": {
+        "basePath": "design-systems/mozaic-styles-main",
+        "componentDir": "packages/styles",
+        "componentSubDirs": ["components", "layouts"],
+        "componentFileExtensions": [".md"],
+        "storiesDir": "src/stories",
+        "storiesSubDirs": ["components", "layouts"],
+        "storiesFileExtensions": [".js"]
+      }
+    },
+    {
+      "name": "Mozaic Vue",
+      "installCommand": "npm install @mozaic-ds/vue",
+      "description": "Vue implementation of the Mozaic Design System.",
+      "useCases": ["Vue"],
+      "components": {
+        "basePath": "design-systems/mozaic-vue-main",
+        "componentDir": "src",
+        "componentSubDirs": ["components"],
+        "componentFileExtensions": [".md"],
+        "storiesDir": "src",
+        "storiesSubDirs": ["components"],
+        "storiesFileExtensions": [".stories.ts"]
+      }
+    }
+  ]
+}

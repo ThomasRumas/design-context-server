@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "ignore": ["**/*.spec.ts", "../design-systems/**"],
+  "compilerOptions": {
+    "deleteOutDir": true
+  }
+}
