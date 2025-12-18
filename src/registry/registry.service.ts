@@ -8,6 +8,8 @@ import type {
 } from './dto/registry.dto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { McpTool } from '../mcp/decorators';
+import * as z from 'zod/v4';
 
 @Injectable()
 export class RegistryService {
@@ -28,10 +30,24 @@ export class RegistryService {
     }
   }
 
+  @McpTool({
+    name: 'list_registries',
+    title: 'List Design System Registries',
+    description: 'List all available design system registries',
+    inputSchema: z.object({}),
+  })
   getAllRegistries(): Registry[] {
     return this.registries;
   }
 
+  @McpTool({
+    name: 'get_registry',
+    title: 'Get Registry Details',
+    description: 'Get detailed information about a specific registry',
+    inputSchema: z.object({
+      name: z.string().describe('Name of the registry'),
+    }),
+  })
   getRegistryByName(name: string): Registry | undefined {
     return this.registries.find((registry) => registry.name === name);
   }
@@ -55,39 +71,63 @@ export class RegistryService {
     );
   }
 
-  getComponentsByRegistryName(name: string): Component[] {
-    const registry = this.getRegistryByName(name);
+  @McpTool({
+    name: 'list_components',
+    title: 'List Components in Registry',
+    description: 'List all components available in a specific registry',
+    inputSchema: z.object({
+      registryName: z.string().describe('Name of the registry'),
+    }),
+  })
+  getComponentsByRegistryName(registryName: string): Component[] {
+    const registry = this.getRegistryByName(registryName);
     if (!registry) {
-      this.logger.warn(`Registry not found: ${name}`);
+      this.logger.warn(`Registry not found: ${registryName}`);
       return [];
     }
     return registry.components || [];
   }
 
-  getComponentByName(
-    registryName: string,
-    componentName: string,
-  ): Component | undefined {
-    const registry = this.getRegistryByName(registryName);
+  @McpTool({
+    name: 'get_component',
+    title: 'Get Component Details',
+    description: 'Get detailed information about a specific component',
+    inputSchema: z.object({
+      registryName: z.string().describe('Name of the registry'),
+      componentName: z.string().describe('Name of the component'),
+    }),
+  })
+  getComponentByName(args: {
+    registryName: string;
+    componentName: string;
+  }): Component | undefined {
+    const registry = this.getRegistryByName(args.registryName);
     if (!registry) {
-      this.logger.warn(`Registry not found: ${registryName}`);
+      this.logger.warn(`Registry not found: ${args.registryName}`);
       return undefined;
     }
 
     const component = registry.components?.find(
-      (component) => component.name === componentName,
+      (component) => component.name === args.componentName,
     );
 
     if (!component) {
       this.logger.warn(
-        `Component not found: ${componentName} in registry: ${registryName}`,
+        `Component not found: ${args.componentName} in registry: ${args.registryName}`,
       );
     }
 
     return component;
   }
 
-  // Method to get the content of a file by its path
+  @McpTool({
+    name: 'get_documentation',
+    title: 'Get Component Documentation',
+    description: 'Get content of a documentation file for a specific component',
+    inputSchema: z.object({
+      filepath: z.string().describe('File path of the documentation file'),
+    }),
+  })
   getFileContent(filePath: string): string {
     try {
       if (!fs.existsSync(filePath)) {

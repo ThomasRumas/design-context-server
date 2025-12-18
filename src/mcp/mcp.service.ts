@@ -1,8 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import * as z from 'zod/v4';
-import { RegistryService } from '../registry/registry.service';
+import { DiscoveryService } from '@nestjs/core';
+import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper';
+import {
+  MCP_TOOL_METADATA,
+  type McpToolMetadata,
+} from './decorators/mcp-tool.decorator';
 
 @Injectable()
 export class McpService {
@@ -10,12 +14,17 @@ export class McpService {
   private server: McpServer;
   public transport: StreamableHTTPServerTransport;
 
-  constructor(private registryService: RegistryService) {
+  constructor(
+    private discoveryService: DiscoveryService,
+  ) {
     this.initializeMcpServer();
     this.transport = this.createTransport();
   }
 
   async onApplicationBootstrap() {
+    // Discover and register tools after all providers are initialized
+    this.discoverAndRegisterTools();
+    
     await this.server.connect(this.transport);
     this.logger.log('MCP Service has been initialized.');
   }
@@ -32,233 +41,126 @@ export class McpService {
         },
       },
     );
-
-    // Register MCP tools based on RegistryService methods
-    this.registerRegistryTools();
-    this.registerComponentTools();
   }
 
-  private registerRegistryTools(): void {
-    // List all registries
-    this.server.registerTool(
-      'list_registries',
-      {
-        title: 'List Design System Registries',
-        description: 'List all available design system registries',
-        inputSchema: z.object({}),
-      },
-      () => {
-        const registries = this.registryService.getAllRegistries();
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Available registries: ${registries.map((r) => r.name).join(', ')}`,
-            },
-          ],
-        };
-      },
-    );
+  private discoverAndRegisterTools(): void {
+    const providers: InstanceWrapper[] = this.discoveryService.getProviders();
+    let toolCount = 0;
 
-    // Get registry details
-    this.server.registerTool(
-      'get_registry',
-      {
-        title: 'Get Registry Details',
-        description: 'Get detailed information about a specific registry',
-        inputSchema: z.object({
-          name: z.string().describe('Name of the registry'),
-        }),
-      },
-      ({ name }) => {
-        const registry = this.registryService.getRegistryByName(name);
-        if (!registry) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Registry '${name}' not found`,
-              },
-            ],
-          };
+    this.logger.log('Starting MCP tool discovery...');
+
+    for (const wrapper of providers) {
+      const { instance } = wrapper;
+      if (!instance || typeof instance === 'string') {
+        continue;
+      }
+
+      const prototype = Object.getPrototypeOf(instance);
+      const toolMetadata: McpToolMetadata[] =
+        Reflect.getMetadata(MCP_TOOL_METADATA, prototype.constructor) || [];
+
+      if (toolMetadata.length > 0) {
+        this.logger.log(
+          `Found ${toolMetadata.length} tool(s) in ${wrapper.name || 'unknown'}`,
+        );
+      }
+
+      for (const tool of toolMetadata) {
+        const methodRef = instance[tool.methodName];
+        if (typeof methodRef === 'function') {
+          this.logger.log(
+            `  → Registering tool: ${tool.name} (${tool.methodName})`,
+          );
+
+          this.server.registerTool(
+            tool.name,
+            {
+              title: tool.title,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            },
+            async (args: any) => {
+              try {
+                // Transform MCP args to method args using paramMap
+                const methodArgs = this.transformArgs(args, tool);
+                const result = await methodRef.call(instance, methodArgs);
+                return this.formatToolResult(result);
+              } catch (error) {
+                this.logger.error(
+                  `Error executing tool ${tool.name}: ${error}`,
+                );
+                return {
+                  content: [
+                    {
+                      type: 'text',
+                      text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+                    },
+                  ],
+                };
+              }
+            },
+          );
+          toolCount++;
         }
+      }
+    }
 
-        const details = `
-Name: ${registry.name}
-Description: ${registry.description || 'N/A'}
-Installation: ${registry.installCommand || 'N/A'}
-Use Cases: ${registry.useCases?.join(', ') || 'N/A'}
-Components: ${(registry.components || []).map((c) => c.name).join(', ') || 'N/A'}
-`;
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: details,
-            },
-          ],
-        };
-      },
+    this.logger.log(
+      `MCP tool discovery complete. Registered ${toolCount} tool(s) total.`,
     );
   }
 
-  private registerComponentTools(): void {
-    // List components in a registry
-    this.server.registerTool(
-      'list_components',
-      {
-        title: 'List Components in Registry',
-        description: 'List all components available in a specific registry',
-        inputSchema: z.object({
-          registryName: z.string().describe('Name of the registry'),
-        }),
-      },
-      ({ registryName }) => {
-        const components =
-          this.registryService.getComponentsByRegistryName(registryName);
+  private transformArgs(args: any, tool: McpToolMetadata): any {
+    // If no args or empty args object, return undefined for methods with no params
+    if (!args || (typeof args === 'object' && Object.keys(args).length === 0)) {
+      return undefined;
+    }
 
-        if (components.length === 0) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `No components found in registry '${registryName}'`,
-              },
-            ],
-          };
+    // If paramMap is not provided, check if we need to extract single value
+    if (!tool.paramMap) {
+      // If args is an object with a single property, extract its value
+      if (typeof args === 'object' && !Array.isArray(args)) {
+        const keys = Object.keys(args);
+        if (keys.length === 1) {
+          return args[keys[0]];
         }
+        // Multiple properties without paramMap, return the object as-is
+        return args;
+      }
+      return args;
+    }
 
-        const componentList = components
-          .map(
-            (c) =>
-              `- ${c.name} (Markdown: ${c.markdownFilePaths?.length || 0}, Stories: ${c.storyFilePaths?.length || 0})`,
-          )
-          .join('\n');
+    // Apply paramMap transformation
+    const transformedArgs: any = {};
+    for (const [mcpParam, methodParam] of Object.entries(tool.paramMap)) {
+      if (mcpParam in args) {
+        transformedArgs[methodParam] = args[mcpParam];
+      }
+    }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Components in '${registryName}':\n${componentList}`,
-            },
-          ],
-        };
-      },
-    );
+    // If only one parameter after mapping, return the value directly
+    const keys = Object.keys(transformedArgs);
+    if (keys.length === 1) {
+      return transformedArgs[keys[0]];
+    }
 
-    // Get component documentation
-    this.server.registerTool(
-      'get_component_docs',
-      {
-        title: 'Get Component Documentation',
-        description: 'Get Markdown documentation for a specific component',
-        inputSchema: z.object({
-          registryName: z.string().describe('Name of the registry'),
-          componentName: z.string().describe('Name of the component'),
-        }),
-      },
-      ({ registryName, componentName }) => {
-        const component = this.registryService.getComponentByName(
-          registryName,
-          componentName,
-        );
+    // Multiple parameters, return as object
+    return transformedArgs;
+  }
 
-        if (!component) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Component '${componentName}' not found in registry '${registryName}'`,
-              },
-            ],
-          };
-        }
+  private formatToolResult(result: any): any {
+    if (result && typeof result === 'object' && 'content' in result) {
+      return result;
+    }
 
-        // Return markdown file paths if available
-        if (
-          component.markdownFilePaths &&
-          component.markdownFilePaths.length > 0
-        ) {
-          const markdownContent = component.markdownFilePaths.map((filePath) =>
-            this.registryService.getFileContent(filePath),
-          );
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Documentation for ${componentName}:\n\n${markdownContent.join('\n---\n')}`,
-              },
-            ],
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `No documentation available for component '${componentName}'`,
-            },
-          ],
-        };
-      },
-    );
-
-    // Get component stories (code examples)
-    this.server.registerTool(
-      'get_component_stories',
-      {
-        title: 'Get Component Stories',
-        description:
-          'Get Storybook stories (code examples) for a specific component',
-        inputSchema: z.object({
-          registryName: z.string().describe('Name of the registry'),
-          componentName: z.string().describe('Name of the component'),
-        }),
-      },
-      ({ registryName, componentName }) => {
-        const component = this.registryService.getComponentByName(
-          registryName,
-          componentName,
-        );
-
-        if (!component) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Component '${componentName}' not found in registry '${registryName}'`,
-              },
-            ],
-          };
-        }
-
-        // Return story file paths if available
-        if (component.storyFilePaths && component.storyFilePaths.length > 0) {
-          const storyContent = component.storyFilePaths.map((filePath) =>
-            this.registryService.getFileContent(filePath),
-          );
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Storybook stories for ${componentName}:\n\n${storyContent.join('\n---\n')}`,
-              },
-            ],
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `No Storybook stories available for component '${componentName}'`,
-            },
-          ],
-        };
-      },
-    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
   }
 
   createTransport(): StreamableHTTPServerTransport {
